@@ -1,0 +1,16 @@
+FARM Full Stack Training Guide - Knowledgecom
+
+About the programme
+The FARM Full Stack workshop is a two-day hands-on programme delivered by Knowledgecom. The trainer is Muhammad Faiz bin Mohamad Yusoff. Each day runs from 9:00 AM to 5:00 PM with a one-hour lunch break at 12:30 PM.
+
+What FARM means
+FARM stands for FastAPI, Async, React and MongoDB. FastAPI is the Python backend framework. Async means the backend waits for the database and model calls without blocking other users. React builds the user interface in the browser. MongoDB stores documents, chunks, vectors and conversations.
+
+Prerequisites
+Participants must install Python 3.11 or newer, Node.js LTS, Git and Visual Studio Code before the first day. A MongoDB Atlas account or a local MongoDB container is required. Participants should bring two sample PDF or TXT files that they are allowed to share.
+
+Assessment
+The final project is a KnowledgeBase Chatbot demonstrated on Day 2. The demo is scored out of 20 points across five dimensions: architecture, retrieval, grounding, user experience and engineering practice. Each dimension is worth 4 points. Participants who score 14 points or more receive a certificate of completion.
+
+Attendance and certificates
+Participants must attend at least 80 percent of the sessions to receive a certificate. Certificates are emailed within seven working days after the workshop.

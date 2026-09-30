@@ -17,6 +17,7 @@ function App() {
   ]);
   const [inputQuery, setInputQuery] = useState('');
   const [loadingAnswer, setLoadingAnswer] = useState(false);
+  const [conversationId, setConversationId] = useState(null);
 
   const fileInputRef = useRef(null);
   const chatBottomRef = useRef(null);
@@ -92,24 +93,50 @@ function App() {
     setLoadingAnswer(true);
 
     try {
-      // Placeholder for query endpoint, simulates bot response or calls backend
-      setTimeout(() => {
+      const response = await fetch(`${API_BASE_URL}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: userMessage.content,
+          conversation_id: conversationId,
+        }),
+      });
+      const result = await response.json();
+
+      if (response.ok) {
+        setConversationId(result.conversation_id);
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: result.answer, citations: result.citations },
+        ]);
+      } else {
         setMessages((prev) => [
           ...prev,
           {
             role: 'assistant',
-            content: `I received your question regarding your uploaded documents: "${userMessage.content}". (Embedding and retrieval query will return relevant chunks once query endpoint is linked).`
-          }
+            content: `Sorry, something went wrong: ${result.detail || response.statusText}`,
+          },
         ]);
-        setLoadingAnswer(false);
-      }, 1000);
+      }
     } catch (err) {
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: 'Sorry, an error occurred while processing your request.' }
+        { role: 'assistant', content: 'Could not connect to backend server.' },
       ]);
+    } finally {
       setLoadingAnswer(false);
     }
+  };
+
+  // The same page can be cited by several chunks; show each source/page once.
+  const uniqueCitations = (citations = []) => {
+    const seen = new Set();
+    return citations.filter((c) => {
+      const key = `${c.source}|${c.page}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   };
 
   return (
@@ -182,6 +209,16 @@ function App() {
               className={`message-bubble message-${msg.role}`}
             >
               {msg.content}
+              {msg.citations?.length > 0 && (
+                <div className="citations">
+                  <span className="citations-label">Sources</span>
+                  {uniqueCitations(msg.citations).map((c) => (
+                    <span key={`${c.source}|${c.page}`} className="citation-chip">
+                      {c.source}{c.page ? ` · p.${c.page}` : ''}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
 
