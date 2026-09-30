@@ -8,12 +8,13 @@ python-multipart>=0.0.9
 pypdf>=4.0
 httpx>=0.27
 
+
 # Local semantic embeddings (no API key) and vector math for retrieval
 fastembed>=0.3
 numpy>=1.26
 
-# Grounded answer generation (/chat)
-anthropic>=1.9
+# Grounded answer generation (/chat) with Gemini
+google-genai>=1.0
 
 # Testing
 pytest>=8.0

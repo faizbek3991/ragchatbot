@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from fastapi.testclient import TestClient
 from mongomock_motor import AsyncMongoMockClient
@@ -22,16 +23,18 @@ def fake_backends(monkeypatch):
     for module in (documents_router, retrieval_router):
         monkeypatch.setattr(module, "chunks", mock_db["chunks"])
     monkeypatch.setattr(documents_router, "documents", mock_db["documents"])
+    monkeypatch.setattr(chat_router, "conversations", mock_db["conversations"])
     monkeypatch.setattr(documents_router, "embed_texts", lambda texts: [fake_vec(t) for t in texts])
     monkeypatch.setattr(retrieval_router, "embed_query", fake_vec)
+    return mock_db
 
 
 @pytest.fixture
 def llm_calls(monkeypatch):
     calls = []
 
-    async def fake_generate(system, user_message):
-        calls.append((system, user_message))
+    async def fake_generate(system, user_message, history=None):
+        calls.append((system, user_message, history))
         return "Apples are in the pie [1]."
 
     monkeypatch.setattr(llm, "generate_answer", fake_generate)
@@ -67,12 +70,11 @@ def test_filter_relevant_drops_low_scores():
 
 def test_chat_answers_with_sources(llm_calls):
     upload("fruit.txt", "apple apple pie")
-    r = client.post("/chat", json={"question": "apple?"})
+    r = client.post("/chat", json={"message": "apple?"})
     assert r.status_code == 200
     body = r.json()
-    assert body["grounded"] is True
     assert body["answer"] == "Apples are in the pie [1]."
-    assert body["sources"][0]["source"] == "fruit.txt"
+    assert body["citations"][0]["source"] == "fruit.txt"
     # The model only ever sees the retrieved passages.
     assert "apple apple pie" in llm_calls[0][1]
     assert "ONLY" in llm_calls[0][0]
@@ -80,49 +82,103 @@ def test_chat_answers_with_sources(llm_calls):
 
 def test_chat_refuses_without_calling_model_when_nothing_relevant(llm_calls):
     upload("cars.txt", "car car engine")
-    r = client.post("/chat", json={"question": "apple?"})
+    r = client.post("/chat", json={"message": "apple?"})
     body = r.json()
-    assert body["grounded"] is False
     assert body["answer"] == grounding.NO_ANSWER
-    assert body["sources"] == []
+    assert body["citations"] == []
     assert llm_calls == []
 
 
 def test_chat_refuses_on_empty_store(llm_calls):
-    r = client.post("/chat", json={"question": "apple?"})
-    assert r.json()["grounded"] is False
+    r = client.post("/chat", json={"message": "apple?"})
+    assert r.json()["answer"] == grounding.NO_ANSWER
+    assert r.json()["citations"] == []
     assert llm_calls == []
 
 
 def test_chat_model_says_unknown_clears_sources(monkeypatch):
-    async def idk(system, user_message):
+    async def idk(system, user_message, history=None):
         return grounding.NO_ANSWER
 
     monkeypatch.setattr(llm, "generate_answer", idk)
     upload("fruit.txt", "apple")
-    body = client.post("/chat", json={"question": "apple?"}).json()
-    assert body["grounded"] is False
-    assert body["sources"] == []
+    body = client.post("/chat", json={"message": "apple?"}).json()
+    assert body["answer"] == grounding.NO_ANSWER
+    assert body["citations"] == []
 
 
 def test_chat_503_when_llm_unavailable(monkeypatch):
-    async def boom(system, user_message):
+    async def boom(system, user_message, history=None):
         raise llm.LLMUnavailable("no key")
 
     monkeypatch.setattr(llm, "generate_answer", boom)
     upload("fruit.txt", "apple")
-    r = client.post("/chat", json={"question": "apple?"})
+    r = client.post("/chat", json={"message": "apple?"})
     assert r.status_code == 503
     assert r.json()["detail"] == "no key"
 
 
 def test_chat_validation():
-    assert client.post("/chat", json={"question": ""}).status_code == 422
-    assert client.post("/chat", json={"question": "  "}).status_code == 400
+    assert client.post("/chat", json={"message": ""}).status_code == 422
+    assert client.post("/chat", json={"message": "  "}).status_code == 400
 
 
 @pytest.mark.asyncio
 async def test_generate_answer_requires_api_key(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(llm.LLMUnavailable):
         await llm.generate_answer("sys", "hi")
+
+
+# ---- conversations ----
+
+def test_chat_creates_and_persists_conversation(llm_calls, fake_backends):
+    upload("fruit.txt", "apple apple pie")
+    body = client.post("/chat", json={"message": "apple?"}).json()
+    cid = body["conversation_id"]
+    assert cid
+    assert body["citations"] == [{"source": "fruit.txt", "page": 1, "score": pytest.approx(1.0)}]
+
+    convo = asyncio.run(fake_backends["conversations"].find_one({"_id": cid}))
+    assert [m["role"] for m in convo["messages"]] == ["user", "assistant"]
+    assert convo["messages"][0]["content"] == "apple?"
+    assert convo["messages"][1]["content"] == "Apples are in the pie [1]."
+    assert convo["messages"][1]["citations"][0]["source"] == "fruit.txt"
+    assert convo["created_at"] and convo["updated_at"]
+
+
+def test_chat_follow_up_reuses_conversation_and_sends_history(llm_calls, fake_backends):
+    upload("fruit.txt", "apple apple pie")
+    cid = client.post("/chat", json={"message": "apple?"}).json()["conversation_id"]
+    second = client.post("/chat", json={"message": "more apple?", "conversation_id": cid}).json()
+    assert second["conversation_id"] == cid
+
+    history = llm_calls[1][2]
+    assert [m["role"] for m in history] == ["user", "assistant"]
+    assert history[0]["content"] == "apple?"
+    assert "created_at" not in history[0]  # only role/content go to the model
+
+    convo = asyncio.run(fake_backends["conversations"].find_one({"_id": cid}))
+    assert len(convo["messages"]) == 4
+
+
+def test_chat_unknown_conversation_404(llm_calls):
+    r = client.post("/chat", json={"message": "apple?", "conversation_id": "nope"})
+    assert r.status_code == 404
+    assert llm_calls == []
+
+
+def test_chat_refusal_turn_is_persisted(llm_calls, fake_backends):
+    body = client.post("/chat", json={"message": "apple?"}).json()
+    convo = asyncio.run(fake_backends["conversations"].find_one({"_id": body["conversation_id"]}))
+    assert convo["messages"][1]["content"] == grounding.NO_ANSWER
+
+
+def test_chat_llm_failure_persists_nothing(monkeypatch, fake_backends):
+    async def boom(system, user_message, history=None):
+        raise llm.LLMUnavailable("no key")
+
+    monkeypatch.setattr(llm, "generate_answer", boom)
+    upload("fruit.txt", "apple")
+    assert client.post("/chat", json={"message": "apple?"}).status_code == 503
+    assert asyncio.run(fake_backends["conversations"].count_documents({})) == 0
