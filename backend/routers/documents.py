@@ -1,9 +1,11 @@
 import uuid
 from datetime import datetime
 from typing import List, Optional
-from fastapi import APIRouter, File, UploadFile, HTTPException, Query
+from urllib.parse import quote
+from bson.binary import Binary
+from fastapi import APIRouter, File, UploadFile, HTTPException, Query, Response
 from fastapi.concurrency import run_in_threadpool
-from core.db import documents, chunks
+from core.db import documents, chunks, files
 from core.chunker import chunk_text, extract_pages_from_pdf
 from core.embeddings import embed_texts
 
@@ -84,8 +86,15 @@ async def upload_document(
         "total_pages": len(extracted_pages),
         "total_chunks": total_chunks,
         "uploaded_at": datetime.utcnow().isoformat(),
+        "has_file": True,
     }
 
+    await files.insert_one({
+        "_id": document_id,
+        "filename": filename,
+        "size": len(content),
+        "data": Binary(content),
+    })
     await documents.insert_one(doc_metadata)
 
     if all_chunk_docs:
@@ -106,11 +115,35 @@ async def upload_document(
 @router.get("/")
 async def list_documents():
     """List all uploaded documents."""
-    cursor = documents.find({}, {"_id": 1, "filename": 1, "total_pages": 1, "total_chunks": 1, "uploaded_at": 1})
+    cursor = documents.find(
+        {},
+        {"_id": 1, "filename": 1, "total_pages": 1, "total_chunks": 1, "uploaded_at": 1, "has_file": 1},
+    )
     docs = await cursor.to_list(length=100)
     for doc in docs:
         doc["document_id"] = doc.pop("_id")
     return docs
+
+
+@router.get("/{document_id}/file")
+async def download_document(document_id: str):
+    """Download the original uploaded file."""
+    stored = await files.find_one({"_id": document_id})
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Original file not stored for this document.")
+
+    filename = stored["filename"]
+    # Never trust the client-supplied content type: derive it from the validated extension,
+    # and force a download so an uploaded file can never render in the browser.
+    media_type = "application/pdf" if filename.lower().endswith(".pdf") else "text/plain; charset=utf-8"
+    return Response(
+        content=bytes(stored["data"]),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/{document_id}/chunks")

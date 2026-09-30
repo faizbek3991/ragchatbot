@@ -3,27 +3,46 @@ import './App.css';
 
 
 const API_BASE_URL = 'http://localhost:8000';
+const CONVERSATION_KEY = 'ragConversationId';
+const GREETING = {
+  role: 'assistant',
+  content: 'Hello! Upload your documents (PDF, TXT, MD) on the left to start asking questions with RAG.'
+};
+
+// localStorage can be blocked (private windows, site settings), so never let it throw.
+const readSavedConversationId = () => {
+  try {
+    return localStorage.getItem(CONVERSATION_KEY);
+  } catch (err) {
+    return null;
+  }
+};
+const saveConversationId = (id) => {
+  try {
+    if (id) localStorage.setItem(CONVERSATION_KEY, id);
+    else localStorage.removeItem(CONVERSATION_KEY);
+  } catch (err) {
+    /* ignore */
+  }
+};
 
 function App() {
   const [documents, setDocuments] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
 
-  const [messages, setMessages] = useState([
-    {
-      role: 'assistant',
-      content: 'Hello! Upload your documents (PDF, TXT, MD) on the left to start asking questions with RAG.'
-    }
-  ]);
+  const [messages, setMessages] = useState([GREETING]);
   const [inputQuery, setInputQuery] = useState('');
   const [loadingAnswer, setLoadingAnswer] = useState(false);
-  const [conversationId, setConversationId] = useState(null);
+  const [conversationId, setConversationId] = useState(readSavedConversationId);
 
   const fileInputRef = useRef(null);
   const chatBottomRef = useRef(null);
 
   useEffect(() => {
     fetchDocuments();
+    restoreConversation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -40,6 +59,29 @@ function App() {
     } catch (err) {
       console.error('Failed to fetch documents:', err);
     }
+  };
+
+  // Reload the saved conversation from MongoDB so a page refresh keeps the chat.
+  const restoreConversation = async () => {
+    if (!conversationId) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/conversations/${conversationId}`);
+      if (response.ok) {
+        const data = await response.json();
+        setMessages([GREETING, ...data.messages.map(({ role, content, citations }) => ({ role, content, citations }))]);
+      } else if (response.status === 404) {
+        setConversationId(null);
+        saveConversationId(null);
+      }
+    } catch (err) {
+      console.error('Failed to restore conversation:', err);
+    }
+  };
+
+  const startNewChat = () => {
+    setConversationId(null);
+    saveConversationId(null);
+    setMessages([GREETING]);
   };
 
   const handleFileUpload = async (event) => {
@@ -105,6 +147,7 @@ function App() {
 
       if (response.ok) {
         setConversationId(result.conversation_id);
+        saveConversationId(result.conversation_id);
         setMessages((prev) => [
           ...prev,
           { role: 'assistant', content: result.answer, citations: result.citations },
@@ -183,7 +226,17 @@ function App() {
             documents.map((doc) => (
               <div key={doc.document_id} className="doc-item">
                 <div className="doc-title" title={doc.filename}>
-                  {doc.filename}
+                  {doc.has_file ? (
+                    <a
+                      className="doc-link"
+                      href={`${API_BASE_URL}/documents/${doc.document_id}/file`}
+                      title="Download original file"
+                    >
+                      {doc.filename}
+                    </a>
+                  ) : (
+                    doc.filename
+                  )}
                 </div>
                 <div className="doc-meta">
                   <span>{doc.total_pages} {doc.total_pages === 1 ? 'page' : 'pages'}</span>
@@ -200,6 +253,9 @@ function App() {
         <header className="chat-header">
           <h1>💬 RAG Chatbot</h1>
           <span className="badge">FastAPI & MongoDB Motor</span>
+          <button className="new-chat-btn" onClick={startNewChat} disabled={loadingAnswer}>
+            + New chat
+          </button>
         </header>
 
         <div className="chat-messages">

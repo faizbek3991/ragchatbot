@@ -10,6 +10,7 @@ db = client["knowledge_chat"]
 documents = db["documents"]
 chunks = db["chunks"]
 conversations = db["conversations"]
+files = db["files"]  # original uploaded files, stored as binary
  
 async def ping_database():
      await client.admin.command("ping")
