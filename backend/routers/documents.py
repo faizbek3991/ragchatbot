@@ -2,10 +2,14 @@ import uuid
 from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, File, UploadFile, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from core.db import documents, chunks
 from core.chunker import chunk_text, extract_pages_from_pdf
+from core.embeddings import embed_texts
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 @router.post("/upload")
@@ -23,7 +27,12 @@ async def upload_document(
             detail="chunk_overlap must be less than chunk_size."
         )
 
-    content = await file.read()
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+        )
     filename = file.filename
     document_id = str(uuid.uuid4())
 
@@ -54,11 +63,18 @@ async def upload_document(
                 "text": chunk,
                 "source": filename,
                 "page": page_number,
-                "embedding": [],  # Ready for embedding vector generation
+                "embedding": [],  # filled in below, once all chunks are built
                 "created_at": datetime.utcnow().isoformat()
             }
             all_chunk_docs.append(chunk_doc)
             total_chunks += 1
+
+    if all_chunk_docs:
+        vectors = await run_in_threadpool(
+            embed_texts, [c["text"] for c in all_chunk_docs]
+        )
+        for chunk_doc, vector in zip(all_chunk_docs, vectors):
+            chunk_doc["embedding"] = vector
 
     # Insert document metadata
     doc_metadata = {
